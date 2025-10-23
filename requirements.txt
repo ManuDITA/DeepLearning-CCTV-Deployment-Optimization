@@ -1,0 +1,6 @@
+carla==0.9.13             # match your CARLA server version; install via wheel provided by CARLA
+numpy
+opencv-python
+motmetrics
+pyyaml
+tqdm
