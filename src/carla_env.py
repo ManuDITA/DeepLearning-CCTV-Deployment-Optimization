@@ -4,8 +4,12 @@ import os
 import random
 import shutil
 import time
+from queue import Queue
+import threading
+import cv2
+import numpy as np
 
-# Dynamically add CARLA Python API egg to sys.path
+# Add CARLA Python API
 egg_path = glob.glob(os.path.expanduser(
     "~/Documents/Carla/PythonAPI/carla/dist/carla-0.9.15-py3.7-linux-x86_64.egg"
 ))
@@ -16,17 +20,12 @@ else:
 
 import carla
 from configs import configs
-from queue import Queue
-import threading
-import cv2
-
-
 
 
 class CarlaEnvironment:
 
-
-    def __init__(self, host=configs.CARLA_HOST, port=configs.CARLA_PORT, num_vehicles=50, num_cameras=1):
+    def __init__(self, host=configs.CARLA_HOST, port=configs.CARLA_PORT,
+                 num_vehicles=50, num_cameras=1):
         print(f"Connecting to CARLA at {host}:{port}...")
         self.client = carla.Client(host, port)
         self.client.set_timeout(10.0)
@@ -37,56 +36,66 @@ class CarlaEnvironment:
         self.num_vehicles = num_vehicles
         self.num_cameras = num_cameras
 
-
         self.camera_queues = [Queue(maxsize=1) for _ in range(self.num_cameras)]
+        self.preview_frames = [None] * self.num_cameras   # for numpy frames used by imshow
+        self.preview_raw = [None] * self.num_cameras      # raw bytes storage filled by callback
         self._start_preview_thread()
-
 
         # --- Traffic Manager ---
         self.tm = self.client.get_trafficmanager(8000)
-        self.tm.set_synchronous_mode(True)      # important for fixed-step mode
-        self.tm.global_percentage_speed_difference(-90)  # slightly faster traffic
-
+        self.tm.set_synchronous_mode(True)
+        self.tm.global_percentage_speed_difference(-90)
         self.greenLights()
+
         # --- Simulation Settings ---
         settings = self.world.get_settings()
         settings.synchronous_mode = True
-        settings.fixed_delta_seconds = 1.0 / 30.0   # 30 FPS simulation
+        settings.fixed_delta_seconds = 1.0 / 30.0  # 30 FPS
         settings.max_substep_delta_time = 0.01
         settings.max_substeps = 10
         self.world.apply_settings(settings)
 
+
         print(f"Synchronous simulation started at {1/settings.fixed_delta_seconds:.1f} FPS.")
+
+        # Clean output folders
+        self.clean_output_folder(configs.SAVE_PATH)
+        self.clean_output_folder(configs.TRACKED_PATH)
+
+        # Async image saving
         self.image_queue = Queue()
         self._start_image_saver()
 
+    # ----------------------------------------------------------------
     def greenLights(self):
         for tl in self.world.get_actors().filter("traffic.traffic_light*"):
             tl.set_state(carla.TrafficLightState.Green)
             tl.freeze(True)
 
-    def _start_image_saver(self):
-        def save_worker():
-            while True:
-                item = self.image_queue.get()
-                if item is None:
-                    break
-                image, cam_id, frame = item
-                filename = os.path.join(configs.SAVE_PATH, f"cam_{cam_id}_frame_{frame}.jpg")
-                image.save_to_disk(filename)
-                self.image_queue.task_done()
-
-        t = threading.Thread(target=save_worker, daemon=True)
-        t.start()
-        self._image_saver_thread = t
+    # ----------------------------------------------------------------
+    def clean_output_folder(self, path):
+        if os.path.exists(path):
+            for f in os.listdir(path):
+                file_path = os.path.join(path, f)
+                try:
+                    if os.path.isfile(file_path) or os.path.islink(file_path):
+                        os.unlink(file_path)
+                    elif os.path.isdir(file_path):
+                        shutil.rmtree(file_path)
+                except Exception as e:
+                    print(f"Failed to delete {file_path}: {e}")
+        else:
+            os.makedirs(path, exist_ok=True)
 
     # ----------------------------------------------------------------
     def spawn_vehicles(self):
+
+        #Spawning only cars
         car_blueprints = [
             bp for bp in self.blueprint_library.filter("vehicle.*")
             if any(name in bp.id for name in ["audi", "bmw", "tesla", "mercedes", "toyota", "ford", "volkswagen"])
         ]
-        """Spawn vehicles at random locations."""
+        
         spawn_points = self.world.get_map().get_spawn_points()
         random.shuffle(spawn_points)
 
@@ -106,31 +115,6 @@ class CarlaEnvironment:
         print(f"Total vehicles spawned: {len(self.actor_list)}")
 
     # ----------------------------------------------------------------
-    def run_simulation(self, duration=30):
-        """
-        Run simulation for a fixed duration of SIMULATION TIME (not wall time).
-        duration is in seconds of simulated world time.
-        """
-        target_frames = int(duration * (1.0 / self.world.get_settings().fixed_delta_seconds))
-        print(f"Running simulation for {duration}s of sim time ({target_frames} frames at 30 FPS)...")
-
-        frame_count = 0
-        start_wall_time = time.time()
-
-        try:
-            while frame_count < target_frames:
-                self.world.tick()
-                frame_count += 1
-                if((frame_count%30)==0):
-                    print(f"We're at second {frame_count/30}")
-
-            elapsed_wall = time.time() - start_wall_time
-            print(f"✅ Simulation complete: {frame_count} frames = {duration:.1f}s sim time "
-                f"(took {elapsed_wall:.2f}s real time).")
-
-        except KeyboardInterrupt:
-            print("Simulation interrupted by user.")
-
     def spawn_static_cameras(self):
         """
         Spawn static cameras that capture every 15 simulation frames.
@@ -154,37 +138,91 @@ class CarlaEnvironment:
             camera = self.world.spawn_actor(camera_bp, point)
             self.actor_list.append(camera)
             self.cameras.append(camera)
-
-            def send_to_preview(image, cam_id=i):
-                # Convert CARLA raw image to numpy
-                array = np.frombuffer(image.raw_data, dtype=np.uint8)
-                array = array.reshape((image.height, image.width, 4))
-                frame = cv2.cvtColor(array[:, :, :3], cv2.COLOR_RGB2BGR)
-
-                # Put the latest frame in the queue (overwrite if needed)
-                q = self.camera_queues[cam_id]
-                if q.full():
-                    _ = q.get()  # remove old frame
-                q.put(frame)
-                filename = os.path.join(configs.SAVE_PATH,f"cam_{cam_id}_frame_{image.frame}.jpg")
-                image.save_to_disk(filename)
-
-            # register callback
-            def make_callback(cam_id):
-                def callback(image):
-                    current_frame = image.frame
-                    # only capture if enough frames have passed
-                    if current_frame - self.last_capture_frame[cam_id] >= self.frame_interval:
-                        self.image_queue.put((image, cam_id, current_frame))
-                        self.last_capture_frame[cam_id] = current_frame
-                return callback
-
-            camera.listen(make_callback(i))
-            #camera.listen(send_to_preview)
+            camera.listen(self.make_camera_callback(i))
             print(f"Spawned static camera {i} at {point.location}")
+
+    # ----------------------------------------------------------------
+    def make_camera_callback(self, cam_id):
+        """
+        Lightweight, thread-safe camera callback.
+        Only enqueues the image for async saving (no GUI or numpy ops).
+        """
+        def callback(image):
+            # Enqueue for saving (saver thread will handle image.save_to_disk)
+            self.image_queue.put((image, cam_id, image.frame))
+        return callback
+
+
+    # ----------------------------------------------------------------
+    def run_simulation(self, duration=30):
+        """
+        Run the simulation for a fixed duration of simulation time (not wall time),
+        without any OpenCV windows. 30 FPS by default.
+        """
+        fixed_dt = self.world.get_settings().fixed_delta_seconds
+        target_frames = int(duration / fixed_dt)
+        print(f"Running simulation for {duration}s of sim time "
+            f"({target_frames} frames at {1/fixed_dt:.0f} FPS)...")
+
+        frame_count = 0
+        start_wall_time = time.time()
+
+        try:
+            while frame_count < target_frames:
+                self.world.tick()
+                frame_count += 1
+
+                # Print simple progress every simulated second
+                if frame_count % int(1 / fixed_dt) == 0:
+                    elapsed_wall = time.time() - start_wall_time
+                    print(f"Sim time: {frame_count * fixed_dt:.1f}s  |  "
+                        f"Frames: {frame_count}  |  "
+                        f"Real time: {elapsed_wall:.2f}s")
+
+            elapsed_wall = time.time() - start_wall_time
+            print(f"✅ Simulation complete: {frame_count} frames "
+                f"= {duration:.1f}s sim time "
+                f"(took {elapsed_wall:.2f}s real time).")
+
+            # Wait for pending image saves to finish
+            self.image_queue.join()
+            self.image_queue.put(None)
+
+        except KeyboardInterrupt:
+            print("Simulation interrupted by user.")
+
+    # ----------------------------------------------------------------
+    def _start_image_saver(self):
+        def save_worker():
+            while True:
+                item = self.image_queue.get()
+                if item is None:
+                    break
+                image, cam_id, frame = item
+                filename = os.path.join(configs.SAVE_PATH, f"cam_{cam_id}_frame_{frame}.jpg")
+                image.save_to_disk(filename)
+                self.image_queue.task_done()
+        t = threading.Thread(target=save_worker, daemon=True)
+        t.start()
+        self._image_saver_thread = t
+
+    # ----------------------------------------------------------------
+    def _start_preview_thread(self):
+        def preview_worker():
+            while True:
+                for cam_id, q in enumerate(self.camera_queues):
+                    if not q.empty():
+                        frame = q.get()
+                        cv2.imshow(f"Camera {cam_id}", frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+            cv2.destroyAllWindows()
+        t = threading.Thread(target=preview_worker, daemon=True)
+        t.start()
+        self._preview_thread = t
+
     # ----------------------------------------------------------------
     def cleanup(self):
-        """Cleanly destroy all actors."""
         print("Cleaning up actors...")
         for actor in list(self.actor_list):
             if actor.is_alive:
@@ -198,28 +236,8 @@ class CarlaEnvironment:
         settings = self.world.get_settings()
         settings.synchronous_mode = False
         self.world.apply_settings(settings)
-
         self.tm.set_synchronous_mode(False)
 
         self.image_queue.join()
         self.image_queue.put(None)
-
         print("Cleanup complete. Simulation back to async mode.")
-
-
-    # ------------------- Preview Thread -------------------
-    def _start_preview_thread(self):
-        def preview_worker():
-            while True:
-                for cam_id, q in enumerate(self.camera_queues):
-                    if not q.empty():
-                        frame = q.get()
-                        window_name = f"Camera {cam_id}"
-                        cv2.imshow(window_name, frame)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-            cv2.destroyAllWindows()
-
-        t = threading.Thread(target=preview_worker, daemon=True)
-        t.start()
-        self._preview_thread = t
