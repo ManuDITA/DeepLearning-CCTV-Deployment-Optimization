@@ -45,47 +45,26 @@ class CarlaEnvironment:
         self.tm = self.client.get_trafficmanager(8000)
         self.tm.set_synchronous_mode(True)
         self.tm.global_percentage_speed_difference(-90)
-        self.greenLights()
 
         # --- Simulation Settings ---
         settings = self.world.get_settings()
         settings.synchronous_mode = True
-        settings.fixed_delta_seconds = 1.0 / 30.0  # 30 FPS
+        settings.fixed_delta_seconds = 1.0 / configs.SIMULATION_FRAMERATE  # 30 FPS
         settings.max_substep_delta_time = 0.01
         settings.max_substeps = 10
         self.world.apply_settings(settings)
 
         print(f"Synchronous simulation started at {1/settings.fixed_delta_seconds:.1f} FPS.")
 
-        # Clean output folders
-        self.clean_output_folder(configs.SAVE_PATH)
-        self.clean_output_folder(configs.TRACKED_PATH)
 
         # Async image saving
         self.image_queue = Queue()
         self._start_image_saver()
 
-    # ----------------------------------------------------------------
-    def greenLights(self):
         for tl in self.world.get_actors().filter("traffic.traffic_light*"):
             tl.set_state(carla.TrafficLightState.Green)
             tl.freeze(True)
-
-    # ----------------------------------------------------------------
-    def clean_output_folder(self, path):
-        if os.path.exists(path):
-            for f in os.listdir(path):
-                file_path = os.path.join(path, f)
-                try:
-                    if os.path.isfile(file_path) or os.path.islink(file_path):
-                        os.unlink(file_path)
-                    elif os.path.isdir(file_path):
-                        shutil.rmtree(file_path)
-                except Exception as e:
-                    print(f"Failed to delete {file_path}: {e}")
-        else:
-            os.makedirs(path, exist_ok=True)
-
+            
     # ----------------------------------------------------------------
     def spawn_vehicles(self):
 
@@ -122,14 +101,12 @@ class CarlaEnvironment:
         camera_bp.set_attribute("image_size_x", str(configs.CAMERA_IMAGE_WIDTH))
         camera_bp.set_attribute("image_size_y", str(configs.CAMERA_IMAGE_HEIGHT))
         camera_bp.set_attribute("fov", str(configs.CAMERA_FOV))
-        camera_bp.set_attribute("sensor_tick", "0.5")  # fully controlled manually in sync mode
+        camera_bp.set_attribute("sensor_tick", str(configs.CAMERA_SENSOR_FRAMERATE/configs.SIMULATION_FRAMERATE))  # fully controlled manually in sync mode
 
         spawn_points = self.world.get_map().get_spawn_points()
         selected_points = random.sample(spawn_points, min(self.num_cameras, len(spawn_points)))
 
         self.cameras = []
-        self.frame_interval = 15  # capture every 15 simulation frames
-        self.last_capture_frame = [0] * len(selected_points)
 
         for i, point in enumerate(selected_points):
             point.location.z += 8.0
