@@ -55,7 +55,6 @@ class CarlaEnvironment:
         settings.max_substeps = 10
         self.world.apply_settings(settings)
 
-
         print(f"Synchronous simulation started at {1/settings.fixed_delta_seconds:.1f} FPS.")
 
         # Clean output folders
@@ -123,7 +122,7 @@ class CarlaEnvironment:
         camera_bp.set_attribute("image_size_x", str(configs.CAMERA_IMAGE_WIDTH))
         camera_bp.set_attribute("image_size_y", str(configs.CAMERA_IMAGE_HEIGHT))
         camera_bp.set_attribute("fov", str(configs.CAMERA_FOV))
-        camera_bp.set_attribute("sensor_tick", "0.0")  # fully controlled manually in sync mode
+        camera_bp.set_attribute("sensor_tick", "0.5")  # fully controlled manually in sync mode
 
         spawn_points = self.world.get_map().get_spawn_points()
         selected_points = random.sample(spawn_points, min(self.num_cameras, len(spawn_points)))
