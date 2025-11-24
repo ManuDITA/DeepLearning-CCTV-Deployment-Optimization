@@ -38,7 +38,7 @@ echo "Carla has started"
 
 # --- 4. Load the map ---
 echo "Loading Town01..."
-python3 ../Carla/PythonAPI/util/config.py --map Town01
+python3 ../Carla/PythonAPI/util/config.py --map Town01 --no-rendering
 
 
 # --- Keep script.running until interrupted ---
