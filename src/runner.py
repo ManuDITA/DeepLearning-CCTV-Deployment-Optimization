@@ -24,10 +24,10 @@ def main():
     clean_output_folder(configs.SAVE_PATH)
     clean_output_folder(configs.TRACKED_PATH)
 
-    env = CarlaEnvironment(num_vehicles=100, num_cameras=10)
+    env = CarlaEnvironment(num_vehicles=configs.NUM_VEHICLES, num_cameras=configs.NUM_CAMERAS)
     env.spawn_vehicles()
     env.spawn_static_cameras()
-    env.run_simulation(duration=30)
+    env.run_simulation(duration=configs.EXPERIMENT_DURATION)
     env.cleanup()
 
 if __name__ == "__main__":
