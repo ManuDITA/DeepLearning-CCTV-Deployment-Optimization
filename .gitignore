@@ -7,6 +7,9 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# camera detection model
+yolov8m.pt
+yolov8n.pt
 # C extensions
 *.so
 
