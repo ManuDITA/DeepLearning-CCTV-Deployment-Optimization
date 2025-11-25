@@ -221,3 +221,5 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+src/__pycache__/detector.cpython-37.pyc
+src/__pycache__/*
