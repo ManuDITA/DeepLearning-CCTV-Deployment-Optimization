@@ -61,36 +61,58 @@ class CarlaEnvironment:
         self.image_queue = Queue()
         self._start_image_saver()
 
-        for tl in self.world.get_actors().filter("traffic.traffic_light*"):
+        for tl in self.world.get_actors().filter("traffic.traffic_light"):
+            print(f"Setting {tl} green")
             tl.set_state(carla.TrafficLightState.Green)
             tl.freeze(True)
             
     # ----------------------------------------------------------------
+
+
     def spawn_vehicles(self):
 
         #Spawning only cars
         car_blueprints = [
             bp for bp in self.blueprint_library.filter("vehicle.*")
-            if any(name in bp.id for name in ["audi", "bmw", "tesla", "mercedes", "toyota", "ford", "volkswagen"])
+            if any(name in bp.id for name in ["audi", "bmw", "tesla", "mercedes", "jeep", "citroen", "CARLA Motors", "Mitsubishi", "toyota", "ford", "volkswagen", "dodge", "lincoln", "mini", "nissan", "chevrolet", "seat"])
         ]
         
+        print(f"Found {len(car_blueprints)} vehicle blueprints in CARLA.")
+
         spawn_points = self.world.get_map().get_spawn_points()
         random.shuffle(spawn_points)
+        spawned = 0
 
         if not car_blueprints:
             print("No car blueprints found!")
             return
 
         for i in range(self.num_vehicles):
-            bp = random.choice(car_blueprints)
+            
+            
+            bp = car_blueprints[i%len(car_blueprints)]
             spawn_point = spawn_points[i % len(spawn_points)]
+
+            # Assign a color only if the blueprint supports it
+            if bp.has_attribute("color"):
+                # Pick a random recommended color
+                color = random.choice(bp.get_attribute("color").recommended_values)
+                avilableColors =bp.get_attribute("color").recommended_values
+                print(f"{bp.id} has the following color: {color}")
+                bp.set_attribute("color", color)
+            else:
+                color = None  # No color attribute available
+
             vehicle = self.world.try_spawn_actor(bp, spawn_point)
+
+
             if vehicle:
                 vehicle.set_autopilot(True, self.tm.get_port())
                 self.actor_list.append(vehicle)
-                print(f"Spawned car {i+1}: {vehicle.type_id}")
+                spawned += 1
 
-        print(f"Total vehicles spawned: {len(self.actor_list)}")
+
+        print(f"Total vehicles spawned: {spawned}")
 
     # ----------------------------------------------------------------
     def spawn_static_cameras(self):
@@ -116,6 +138,39 @@ class CarlaEnvironment:
             self.cameras.append(camera)
             camera.listen(self.make_camera_callback(i))
             print(f"Spawned static camera {i} at {point.location}")
+
+    # ---------------
+    def spawn_dynamic_camera(self, location, rotation, camera_id=None):
+
+        # assign ID automatically
+        self.num_cameras = self.num_cameras + 1
+        if camera_id is None:
+            camera_id = len(self.cameras)
+
+        camera_bp = self.blueprint_library.find("sensor.camera.rgb")
+        camera_bp.set_attribute("image_size_x", str(configs.CAMERA_IMAGE_WIDTH))
+        camera_bp.set_attribute("image_size_y", str(configs.CAMERA_IMAGE_HEIGHT))
+        camera_bp.set_attribute("fov", str(configs.CAMERA_FOV))
+        camera_bp.set_attribute(
+            "sensor_tick",
+            str(configs.CAMERA_SENSOR_FRAMERATE / configs.SIMULATION_FRAMERATE)
+        )
+
+        transform = carla.Transform(location, rotation)
+        camera = self.world.spawn_actor(camera_bp, transform)
+        if camera is None:
+            print(f"❌ Failed to spawn camera at {location}")
+            return None
+
+        # track it
+        self.actor_list.append(camera)
+        self.cameras.append(camera)
+
+        camera.listen(self.make_camera_callback(camera_id))
+
+        print(f"📷 Added dynamic camera {camera_id} at {location} rot={rotation}")
+
+        return camera
 
     # ----------------------------------------------------------------
     def make_camera_callback(self, cam_id):
@@ -199,21 +254,37 @@ class CarlaEnvironment:
 
     # ----------------------------------------------------------------
     def cleanup(self):
+
         print("Cleaning up actors...")
-        for actor in list(self.actor_list):
-            if actor.is_alive:
+
+        # 4) Force-clean any remaining actors in world (vehicles & sensors)
+        try:
+            for actor in self.world.get_actors().filter('*vehicle*'):
                 try:
                     actor.destroy()
-                except Exception as e:
-                    print(f"Failed to destroy actor {actor.id}: {e}")
-        self.actor_list.clear()
+                except Exception:
+                    pass
+            for actor in self.world.get_actors().filter('*sensor*'):
+                try:
+                    actor.destroy()
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
-        # Restore async mode for next runs
-        settings = self.world.get_settings()
-        settings.synchronous_mode = False
-        self.world.apply_settings(settings)
-        self.tm.set_synchronous_mode(False)
+        self.actor_list = []
 
-        self.image_queue.join()
-        self.image_queue.put(None)
+        try:
+            settings = self.world.get_settings()
+            settings.synchronous_mode = False
+            settings.fixed_delta_seconds = None
+            self.world.apply_settings(settings)
+        except Exception:
+            pass
+
+        try:
+            self.tm.set_synchronous_mode(False)
+        except Exception:
+            pass
+
         print("Cleanup complete. Simulation back to async mode.")
